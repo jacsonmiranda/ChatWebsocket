@@ -1,0 +1,329 @@
+<!DOCTYPE HTML>
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:fragment="headerfiles">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" type="text/css"
+	th:href="@{/webjars/bootstrap/4.4.1/css/bootstrap.css}" />
+<link rel="stylesheet" type="text/css" th:href="@{/css/main.css}" />
+<link rel="stylesheet"
+	href="https://stackpath.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css"
+	integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN"
+	crossorigin="anonymous">
+<script th:src="@{/webjars/jquery/3.4.1/jquery.js}"></script>
+</head>
+<body>
+	<div class="container text-left title-container">
+		<h3>Chat com Websocket + Spring Boot + STOMP</h3>
+	</div>
+	<div class="container chat-container">
+		<div class="row">
+			<div class="col-md-12">
+				<div class="mb-3">
+					<div class="input-group">
+						<input type="text" id="from" class="form-control"
+							placeholder="Oi, qual teu @ ?" />
+						<div class="btn-group ml-1">
+							<button type="button" id="connect" class="btn btn-sm btn-primary"
+								onclick="connect()">
+								<i class="fa fa-user-plus" aria-hidden="true"></i>
+							</button>
+						</div>
+					</div>
+				</div>
+				<div class="mb-3" id="users" style="display: none;">
+					<span id="active-users-span"></span>
+					<ul id="active-users" class="list-group list-group-horizontal-sm"></ul>
+				</div>
+				<div id="divSelectedUser" class="mb-3" style="display: none;">
+					<span id="selectedUser" class="badge badge-secondary"></span>
+				</div>
+				<div class="mb-3">
+					<div class="input-group" id="sendmessage" style="display: none;">
+						<input type="text" id="message" class="form-control"
+							placeholder="Digite aqui sua mensagem...">
+						<div class="input-group-append">
+							<button id="send" class="btn btn-primary" onclick="send()">
+								<i class="fa fa-paper-plane" aria-hidden="true"></i>
+							</button>
+						</div>
+						<div>
+							<span class="float-right ml-1">
+								<button id="clear" class="btn btn-primary"
+									onclick="clearMessages()" style="display: none;">
+									<i class="fa fa-eraser" aria-hidden="true"></i>
+								</button>
+								<button id="disconnect" class="btn btn-outline-secondary"
+									onclick="disconnect()" style="display: none;" disabled>
+									<i class="fa fa-sign-out" aria-hidden="true"></i>
+								</button>
+							</span>
+						</div>
+					</div>
+				</div>
+				<div class="mb-3" id="sendfile" style="display: none;">
+					<input id="file" type="file" size="60" name="file"/>
+				</div>
+			</div>
+		</div>
+		<div class="row content">
+			<div class="col-md-12">
+				<div id="content"></div>
+				<div id="response"></div>
+			</div>
+		</div>
+	</div>
+
+	<script th:src="@{/webjars/sockjs-client/1.1.2/sockjs.js}"
+		type="text/javascript"></script>
+	<script th:src="@{/webjars/stomp-websocket/2.3.3-1/stomp.js}"
+		type="text/javascript"></script>
+	<script type="text/javascript">
+		var stompClient = null;
+		var selectedUser = null;
+		var userName = $("#from").val();
+
+		function setConnected(connected) {
+			$("#from").prop("disabled", connected);
+			$("#connect").prop("disabled", connected);
+			$("#disconnect").prop("disabled", !connected);
+			if (connected) {
+				$("#users").show();
+				$("#sendmessage").show();
+				$("#sendfile").show();
+			} else {
+				$("#users").hide();
+				$("#sendmessage").hide();
+				$("#sendfile").hide();
+			}
+		}
+
+		function connect() {
+			userName = $("#from").val();
+			if (userName == null || userName === "") {
+				alert('Preciso do teu @ para tc com vc!');
+				return;
+			}
+			$.post(
+					'/connect',
+					{
+						username : userName
+					},
+					function(remoteAddr, status, xhr) {
+						var socket = new SockJS('/chat');
+						stompClient = Stomp.over(socket);
+						stompClient.connect({
+							username : userName
+						}, function() {
+							stompClient.subscribe('/topic/broadcast', function(
+									output) {
+								showMessage(createTextNode(JSON
+										.parse(output.body)));
+							});
+
+							stompClient.subscribe('/topic/active', function() {
+								updateUsers(userName);
+							});
+
+							stompClient.subscribe('/user/queue/messages',
+									function(output) {
+										showMessage(createTextNode(JSON
+												.parse(output.body)));
+									});
+
+							sendConnection(' entrou na sala');
+							setConnected(true);
+						}, function() {
+						});
+
+					}).done(function() {
+			}).fail(function(jqxhr, settings, ex) {
+				console.log('failed, ' + ex);
+			});
+		}
+
+		function disconnect() {
+			if (stompClient != null) {
+				$.post('/disconnect', {
+					username : userName
+				}, function() {
+					sendConnection(' saiu da sala');
+
+					stompClient.disconnect(function() {
+						console.log('disconectado...');
+						setConnected(false);
+					});
+
+				}).done(function() {
+					$("#disconnected").hide();
+					clearMessages();
+				}).fail(function(jqxhr, settings, ex) {
+				});
+			}
+		}
+
+		function sendConnection(message) {
+			var text = userName + message;
+			sendBroadcast({
+				'from' : 'sistema',
+				'text' : text
+			});
+			updateUsers(userName);
+		}
+
+		function sendBroadcast(json) {
+			stompClient.send("/app/broadcast", {}, JSON.stringify(json));
+		}
+
+		function send() {
+			var text = $("#message").val();
+			if (selectedUser == null) {
+				alert('Ei, selecione um @.');
+				return;
+			}
+			stompClient.send("/app/chat", {
+				'sender' : userName
+			}, JSON.stringify({
+				'from' : userName,
+				'text' : text,
+				'recipient' : selectedUser
+			}));
+			$("#message").val("");
+		}
+		
+		$("#file").change(function(objEvent) {
+			if (selectedUser == null) {
+				alert('Ei, selecione um @.');
+				$("#file").val("");
+				return;
+			}
+		    var formData = new FormData();
+		    var objFile = $(this)[0].files[0];
+		    formData.append('file', objFile);
+		    formData.append('sender', userName);
+		    formData.append('recipient', selectedUser);
+		    $.ajax({
+		        url: '/uploadFile',
+		        type: 'POST',
+		        contentType: false,
+		        enctype: 'multipart/form-data',
+		        data: formData,
+		        processData: false,
+		        success: function(data) {}
+		    });
+		    $("#file").val("");
+		});
+
+		function createTextNode(messageObj) {
+			var classAlert = 'alert-info';
+			var fromTo = messageObj.from;
+			var addTo = fromTo;
+			var text = messageObj.text;
+
+			if (userName == messageObj.from) {
+				fromTo = messageObj.recipient;
+				addTo = 'para: ' + fromTo;
+			}
+
+			if (userName != messageObj.from && messageObj.from != "sistema") {
+				classAlert = "alert-warning";
+			}
+
+			if (messageObj.from != "sistema") {
+				addTo = '<a href="javascript:void(0)" onclick="setSelectedUser(\''
+						+ fromTo + '\')">' + addTo + '</a>';
+			}
+			
+			if (messageObj.file != null) {
+				var byteCharacters = atob(messageObj.file);
+				var byteNumbers = new Array(byteCharacters.length);
+				for (let i = 0; i < byteCharacters.length; i++) {
+				    byteNumbers[i] = byteCharacters.charCodeAt(i);
+				}
+				var bytes = new Uint8Array(byteNumbers);
+				var blob = new Blob([bytes]);
+				var downloadLink = document.createElement("a");
+				downloadLink.href = window.URL.createObjectURL(blob);
+				downloadLink.download = text;
+				downloadLink.innerHTML = "Novo arquivo: " + text;
+				text = downloadLink.outerHTML;
+			}
+			
+			return '<div class="row alert ' + classAlert + '"><div class="col-md-8">'
+					+ text
+					+ '</div><div class="col-md-4 text-right"><small>[<b>'
+					+ addTo
+					+ '</b> '
+					+ messageObj.time
+					+ ']</small>'
+					+ '</div></div>';
+		}
+
+		function showMessage(message) {
+			$("#content").html($("#content").html() + message);
+			$("#clear").show();
+			$("#disconnect").show();
+		}
+
+		function clearMessages() {
+			$("#content").html("");
+			$("#clear").hide();
+		}
+
+		function setSelectedUser(username) {
+			selectedUser = username;
+			$("#selectedUser").html(selectedUser);
+			if ($("#selectedUser").html() == "") {
+				$("#divSelectedUser").hide();
+			} else {
+				$("#divSelectedUser").show();
+			}
+		}
+
+		function updateUsers(userName) {
+			var activeUserSpan = $("#active-users-span");
+			var activeUserUL = $("#active-users");
+
+			var index;
+			activeUserUL.html('');
+
+			var url = '/active-users-except/' + userName;
+			$
+					.ajax({
+						type : 'GET',
+						url : url,
+						dataType : 'json',
+						success : function(userList) {
+							if (userList.length == 0) {
+								activeUserSpan
+										.html('<p class="mt-5"><i>Nenhum @ ativo no momento.</i></p>');
+							} else {
+								activeUserSpan
+										.html('<p class="text-muted">Selecione um @ para iniciar uma conversa</p>');
+
+								for (index = 0; index < userList.length; ++index) {
+									if (userList[index] != userName) {
+										activeUserUL
+												.html(activeUserUL.html()
+														+ createUserNode(
+																userList[index],
+																index));
+									}
+								}
+							}
+						},
+						error : function(XMLHttpRequest, textStatus,
+								errorThrown) {
+							alert("Ocorreu um erro ao atualizar os usuários.");
+						}
+					});
+		}
+
+		function createUserNode(username, index) {
+			return '<li class="list-group-item">'
+					+ '<a class="active-user" href="javascript:void(0)" onclick="setSelectedUser(\''
+					+ username + '\')">' + username + '</a>' + '</li>';
+		}
+	</script>
+</body>
+</html>
